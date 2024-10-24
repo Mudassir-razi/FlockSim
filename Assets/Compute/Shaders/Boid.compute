@@ -1,0 +1,156 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+#pragma kernel clearAll
+
+struct Agent
+{
+    float2 pos;
+    float2 vel;
+    float2 accel;
+    int group;
+};
+
+struct Colors
+{
+    float4 pixel;
+};
+
+
+RWStructuredBuffer<Colors> colorPallete;
+RWStructuredBuffer<Agent> agents;
+RWTexture2D<float4> RenderTex;
+
+//parameters
+float agentCount;
+float maxSpeed;
+float maxForce;
+float SeparationDist;
+float decayRate;
+float blur;
+
+float alignment;
+float cohesion;
+float separation;
+
+float timeStep;
+float mapSizeX;
+float mapSizeY;
+float x_max;
+float y_max;
+
+
+
+int map(float val, float minx, float maxx, float miny, float maxy)
+{
+    return miny + ((maxy - miny) / (maxx - minx)) * (val - minx);
+}
+
+float mag(float2 x)
+{
+    return sqrt(x.x * x.x + x.y * x.y);
+}
+
+float2 normalize(float2 x)
+{
+    float m = mag(x);
+    return x / m;
+}
+
+
+[numthreads(16,1,1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    Agent agent = agents[id.x];
+    uint2 tc; //render texture coordinate
+    int neighbourCount = 0;
+    
+    float2 sepForce = float2(0, 0);
+    float2 alignForce = float2(0, 0);
+    float2 centerForce = float2(0, 0);
+    float2 centerPos = float2(0, 0);
+    float4 desiredCol = float4(0, 0, 0, 0);
+    
+    for (int i = 0; i < agentCount;i++)
+    {
+        Agent other = agents[i];
+        
+        float dist = mag(agent.pos - other.pos);
+        
+        if(dist >  0 && dist < SeparationDist)
+        {
+            float2 away = normalize(agent.pos - other.pos)/dist;
+            
+            away = agent.group == other.group ? away : away * abs(agent.group - other.group);
+            
+            sepForce += away;
+            alignForce += other.vel;
+            centerPos += other.pos;
+            neighbourCount++;
+        }
+
+    }
+    
+  
+    
+    if(neighbourCount > 0)
+    {
+        centerForce = normalize(centerPos / neighbourCount - agent.pos) * maxSpeed - agent.vel;
+        sepForce = normalize(sepForce / neighbourCount) * maxSpeed - agent.vel;
+        alignForce = normalize(alignForce / neighbourCount) * maxSpeed - agent.vel;
+        desiredCol = desiredCol / neighbourCount;
+    }
+    
+    
+    centerForce = normalize(centerForce) * maxForce * cohesion;
+    sepForce = normalize(sepForce) * maxForce * separation;
+    alignForce = normalize(alignForce) * maxForce * alignment;
+    
+    if (mag(sepForce) > 0)
+        RenderTex[int2(500, 500)] = float4(1, 1, 1, 1);
+    
+    agent.accel = centerForce + sepForce + alignForce; //maxForce * normalize(centerForce + sepForce + alignForce);
+    agent.vel += agent.accel * timeStep;
+    agent.pos += agent.vel * timeStep;
+    
+    
+    //boudary check
+    if (agent.pos.x > x_max)agent.pos.x = 0;
+    if (agent.pos.x < 0)agent.pos.x = x_max;
+    if (agent.pos.y > y_max)agent.pos.y = 0;
+    if (agent.pos.x < 0)agent.pos.y = y_max;
+
+    
+    tc.x = int(agent.pos.x); //map(agent.pos.x, -x_max, x_max, 0, mapSizeX);
+    tc.y = int(agent.pos.y); //map(agent.pos.y, -y_max, y_max, 0, mapSizeY);
+    
+    agents[id.x] = agent;
+    
+    //drawing stuff
+    RenderTex[tc] += colorPallete[agent.group].pixel;
+    for (int inc = 1; inc < 4; inc++)
+    {
+        RenderTex[tc + int2(0, inc)] = colorPallete[agent.group].pixel;
+        RenderTex[tc + int2(inc, 0)] = colorPallete[agent.group].pixel;
+        RenderTex[tc + int2(inc, inc)] = colorPallete[agent.group].pixel;
+    }
+}
+
+[numthreads(8, 8, 1)]
+void clearAll(uint3 id : SV_DispatchThreadID)
+{
+    float4 sum = float4(0.0, 0.0, 0.0, 0.0);
+    for (int i = -1; i < 2; i++)
+    {
+        for (int j = -1; j < 2; j++)
+        {
+            uint2 idx = id.xy;
+            idx.x += i;
+            idx.y += j;
+            sum = sum + RenderTex[idx];
+        }
+    }
+    
+    sum = sum / 9.0;
+    RenderTex[id.xy] = RenderTex[id.xy] + (sum - RenderTex[id.xy]) * blur;
+    RenderTex[id.xy] -= float4(1, 1, 1, 0) * decayRate;
+}

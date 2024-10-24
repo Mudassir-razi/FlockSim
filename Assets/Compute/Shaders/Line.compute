@@ -1,0 +1,171 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel LineMain
+#pragma kernel Fade
+
+
+struct Agent
+{
+    float2 pos;
+    float2 vel;
+    float4 group;
+};
+
+struct Colors
+{
+    float4 pixel;
+};
+
+
+RWStructuredBuffer<Agent> agents;
+RWTexture2D<float4> RenderTex;
+
+//simulation parameters
+float xMax;
+float yMax;
+float timeStep;
+float maxSpeed;
+float steerForce;
+float evaporateRate;
+
+int sensorSize;
+float randomness;
+float sensorAngle;
+float sensorOffset;
+
+uint Hash(uint s)
+{
+    s ^= 2747636419u;
+    s *= 2654435769u;
+    s ^= s >> 16;
+    s *= 2654435769u;
+    s ^= s >> 16;
+    s *= 2654435769u;
+    return s;
+}
+
+float Random(uint seed)
+{
+    return float(Hash(seed)) / 4294967295.0; // 2^32-1
+}
+
+float lookUp(Agent agent, float sensorAngleOffset)
+{
+    float2 dir = agent.vel;
+    float2 pos = agent.pos;
+    float agentAngle = atan2(dir.y, dir.x);
+    float2 sensorDir = float2(cos(agentAngle + sensorAngleOffset), sin(agentAngle + sensorAngleOffset));
+    int2 sensorCenter = pos + sensorDir * sensorOffset;
+    float sum = 0;
+    
+    for (int i = -sensorSize; i <= sensorSize; i++)
+    {
+        for (int j = -sensorSize; j <= sensorSize; j++)
+        {
+            int2 pos = sensorCenter + int2(i, j);
+            if (pos.x >= 0 && pos.x <= xMax && pos.y >= 0 && pos.y <= yMax)
+            {
+                float dotProduct = dot(RenderTex[pos], agent.group * 2 - 1);
+                sum += dotProduct;
+            }
+
+        }
+
+    }
+    return sum;
+}
+
+float2 RandomizeDir(float2 original)
+{
+    float2 newDir;
+    float mag = length(original);
+    float angle = atan2(original.y, original.x);
+    
+    angle += (2 * Random(uint(original.x) * (uint) original.y) - 1) * randomness;
+    newDir = float2(cos(angle) * mag, sin(angle) * mag);
+    return newDir;
+}
+
+[numthreads(8, 1, 1)]
+void LineMain(uint3 id : SV_DispatchThreadID)
+{
+    Agent agent = agents[id.x];
+    uint2 tc;
+    uint seed = id.x * uint(agent.pos.y) * uint(agent.pos.x) * id.y;
+    
+    //keep it inside boudary
+    
+    if (agent.pos.x < 0 || agent.pos.x > xMax)
+    {
+        agent.vel.x *= -1;
+        //agent.vel = RandomizeDir(agent.vel);
+
+    }
+    if (agent.pos.y < 0 || agent.pos.y > yMax)
+    {
+        agent.vel.y *= -1;
+        //agent.vel = RandomizeDir(agent.vel);
+    }
+    
+    tc.x = agent.pos.x;
+    tc.y = agent.pos.y;
+    
+    float2 nextPos = agent.pos + round(agent.vel * timeStep);
+    
+    if(agent.vel.x != 0)
+    {
+        //it's horizontal bound
+        if (RenderTex[nextPos].x != 0)
+        {
+            nextPos.y += Random(agent.pos.y) * randomness;
+        }
+        //drawvertical line
+        int len = Random(agent.pos.y) * randomness;
+        for (int i = 1; i < len; i++)
+        {
+            RenderTex[agent.pos + uint2(0, i)] = agent.group;
+        }
+
+    }
+    else if (agent.vel.y != 0)
+    {
+        //it's vertical bound
+        if (RenderTex[nextPos].x != 0)
+        {
+            nextPos.x += + Random(agent.pos.x) * randomness;
+        }
+        
+        int len = Random(agent.pos.x) * randomness;
+        for (int i = 1; i < len; i++)
+        {
+            RenderTex[agent.pos + uint2(i, 0)] = agent.group;
+        }
+    }
+    agent.pos = nextPos;
+        
+    
+    agents[id.x] = agent;
+    RenderTex[tc] = agent.group;
+}
+
+[numthreads(8, 8, 1)]
+void Fade(uint3 id : SV_DispatchThreadID)
+{
+    float4 CurrentVal = RenderTex[id.xy];
+    float sobel[9] = { 1, 2, 1, 0, 0, 0, -1, -2, -1 };
+    float4 sum = float4(0.0, 0.0, 0.0, 0.0);
+    
+    int index = 0;
+    for (int i = -1; i < 2; i++)
+    {
+        for (int j = -1; j < 2; j++)
+        {
+            uint2 tempTexCor = uint2(id.x + i, id.y + j);
+            sum += RenderTex[tempTexCor] * sobel[index];
+            index++;
+        }
+    }
+    sum = sum / 9;
+    
+    RenderTex[id.xy] = sum;
+}
+

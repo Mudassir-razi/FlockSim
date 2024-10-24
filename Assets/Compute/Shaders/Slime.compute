@@ -1,0 +1,156 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel SlimeMain
+#pragma kernel Fade
+
+
+struct Agent
+{
+    float2 pos;
+    float2 vel;
+    float4 group;
+};
+
+struct Colors
+{
+    float4 pixel;
+};
+
+
+RWStructuredBuffer<Agent> agents;
+RWTexture2D<float4> RenderTex;
+
+//simulation parameters
+float xMax;
+float yMax;
+float timeStep;
+float maxSpeed;
+float steerForce;
+float evaporateRate;
+
+int sensorSize;
+float randomness;
+float sensorAngle;
+float sensorOffset;
+
+uint Hash(uint s)
+{
+    s ^= 2747636419u;
+    s *= 2654435769u;
+    s ^= s >> 16;
+    s *= 2654435769u;
+    s ^= s >> 16;
+    s *= 2654435769u;
+    return s;
+}
+
+float Random(uint seed)
+{
+    return float(Hash(seed)) / 4294967295.0; // 2^32-1
+}
+
+float lookUp(Agent agent, float sensorAngleOffset)
+{
+    float2 dir = agent.vel;
+    float2 pos = agent.pos;
+    float agentAngle = atan2(dir.y, dir.x);
+    float2 sensorDir = float2(cos(agentAngle + sensorAngleOffset), sin(agentAngle + sensorAngleOffset));
+    int2 sensorCenter = pos + sensorDir * sensorOffset;
+    float sum = 0;
+    
+    for (int i = -sensorSize; i <= sensorSize; i++)
+    {
+        for (int j = -sensorSize; j <= sensorSize; j++)
+        {
+            int2 pos = sensorCenter + int2(i, j);
+            if(pos.x >= 0 && pos.x <= xMax && pos.y >= 0 && pos.y <= yMax)
+            {
+                float dotProduct = dot(RenderTex[pos], agent.group * 2 - 1);
+                sum += dotProduct;
+            }
+
+        }
+
+    }
+    return sum;
+}
+
+float2 RandomizeDir(float2 original)
+{
+    float2 newDir;
+    float mag = length(original);
+    float angle = atan2(original.y, original.x);
+    
+    angle += (2 * Random(uint(original.x) * (uint) original.y) - 1) * randomness;
+    newDir = float2(cos(angle) * mag, sin(angle) * mag);
+    return newDir;
+}
+
+[numthreads(8,1,1)]
+void SlimeMain (uint3 id : SV_DispatchThreadID)
+{
+    Agent agent = agents[id.x];
+    uint2 tc;
+    uint seed = id.x * uint(agent.pos.y) + uint(agent.vel.x);
+    agent.pos += agent.vel * timeStep;
+    
+    //keep it inside boudary
+    
+    if (agent.pos.x < 0 || agent.pos.x > xMax)
+    {
+        agent.vel.x *= -1;
+        agent.vel = RandomizeDir(agent.vel);
+
+    }
+    if (agent.pos.y < 0 || agent.pos.y > yMax)
+    {
+        agent.vel.y *= -1;
+        agent.vel = RandomizeDir(agent.vel);
+    }
+    
+    tc.x = agent.pos.x;
+    tc.y = agent.pos.y;
+    
+        
+    //steer towards maximum density
+    float angle = atan2(agent.vel.y, agent.vel.x);
+    float weightF = lookUp(agent, 0);
+    float weightL = lookUp(agent, sensorAngle);
+    float weightR = lookUp(agent, -sensorAngle);
+    
+    if (weightF > weightR && weightF > weightL)
+        angle += 0;
+    else if (weightL > weightR)
+        angle += steerForce * timeStep;
+    else if (weightL < weightR)
+        angle -= steerForce * timeStep;
+    angle += randomness * (1.0 - Random(seed));
+    agent.vel = float2(maxSpeed * cos(angle), maxSpeed * sin(angle));
+    
+ 
+    agents[id.x] = agent;
+    RenderTex[tc] = agent.group;
+}
+
+[numthreads(8, 8, 1)]
+void Fade(uint3 id : SV_DispatchThreadID)
+{
+    float4 CurrentVal = RenderTex[id.xy];
+    
+    //blur or diffusion
+    float4 sum = float4(0.0, 0.0, 0.0, 0.0);
+    for (int i = -1; i < 2; i++)
+    {
+        for (int j = -1; j < 2; j++)
+        {
+            uint2 idx = id.xy;
+            idx.x += i;
+            idx.y += j;
+            sum = sum + RenderTex[idx];
+        }
+    }
+    CurrentVal = sum / 9.0;
+    
+    //evaporation
+    RenderTex[id.xy] = max(0, CurrentVal - evaporateRate * timeStep);
+}
+

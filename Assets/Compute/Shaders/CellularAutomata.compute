@@ -1,0 +1,65 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel Automata
+#pragma kernel Initiate
+
+// Create a RenderTexture with enableRandomWrite flag and set it
+// with cs.SetTexture
+RWTexture2D<float4> RenderTex;
+RWTexture2D<float4> Filter;
+
+int xMax;
+int yMax;
+int randomize;
+float fill;
+
+
+uint Hash(uint s)
+{
+    s ^= 2747636419u;
+    s *= 2654435769u;
+    s ^= s >> 16;
+    s *= 2654435769u;
+    s ^= s >> 16;
+    s *= 2654435769u;
+    return s;
+}
+
+float Random(uint seed)
+{
+    return float(Hash(seed)) / 4294967295.0; // 2^32-1
+}
+
+
+[numthreads(8,8,1)]
+void Automata (uint3 id : SV_DispatchThreadID)
+{
+    uint2 curPixel = id.xy;
+    float conv = 0.0;
+    
+    for (int i = -1; i < 2; i++)
+    {
+        for (int j = -1; j < 2;j++)
+        {
+            int2 onFilterpos = int2(1 + i, 1 + j);
+            int2 filterPos = int2(i + (int) curPixel.x, j + (int) curPixel.y);
+            
+            if (filterPos.x >= xMax)filterPos.x = 0;
+            else if (filterPos.x < 0)filterPos.x = xMax-1;
+            
+            if (filterPos.y >= yMax)filterPos.y = 0;
+            else if (filterPos.y < 0)filterPos.y = yMax-1;
+            
+            conv += dot(Filter[onFilterpos], RenderTex[filterPos]);
+        }
+    }
+    
+    RenderTex[curPixel] = sin(conv * 0.9) * float4(1, 1, 1, 1);
+
+}
+
+[numthreads(8, 8, 1)]
+void Initiate(uint3 id : SV_DispatchThreadID)
+{
+    float4 col = float4(1, 1, 1, 1);
+    if (Random(id.x * id.y * randomize) < fill)RenderTex[id.xy] = col;
+}

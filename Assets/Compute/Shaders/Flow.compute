@@ -1,0 +1,106 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel Flow
+#pragma kernel Blur
+
+
+struct Agent
+{
+    float2 pos;
+    float4 color;
+};
+
+
+RWTexture2D<float4> TrailMap;
+RWStructuredBuffer<Agent> agents;
+
+//simulation parameters
+float timeStep;
+float mapSizeX;
+float mapSizeY;
+float x_max;
+float y_max;
+
+//equation parameters
+float k;
+float omega1;
+float omega2;
+
+float rMax;
+float gMax;
+float bMax;
+
+//display stuff
+int blurSize;
+float decayRate = 0.0001;
+
+//functions
+int map(float val, float minx, float maxx, float miny, float maxy)
+{
+    return miny + ((maxy - miny) / (maxx - minx)) * (val - minx);
+}
+
+float evalX(float x, float y)
+{
+    float xPrime = (1 - k) * sin(x * omega1 + omega2) + k * sin(y + omega1);
+    if (gMax > 200)
+        xPrime += exp(-x / (56.0));
+    return xPrime;
+
+}
+
+float evalY(float x, float y)
+{
+    float yPrime = (1 - k) * sin(y * omega1) * k * cos(x * omega1 - omega2);
+    if (bMax > 200)
+        yPrime += exp(-y / (78.0));
+    if (rMax < 100)
+        yPrime += log(abs(x * omega1) / 22 + 1) * omega1;
+    return yPrime;
+
+}
+
+float mag(float2 x)
+{
+    return sqrt(x.x * x.x + x.y * x.y);
+}
+
+[numthreads(16,1,1)]
+void Flow (uint3 id : SV_DispatchThreadID)
+{
+    Agent agent = agents[id.x];
+    //update position
+    uint2 tc; //texture coordinate
+    float x = agent.pos.x;
+    float y = agent.pos.y;
+    
+    agent.pos.x = x + evalX(x, y) * timeStep;
+    agent.pos.y = y + evalY(x, y) * timeStep;
+    
+    agents[id.x] = agent;
+    
+    tc.x = map(agent.pos.x, -x_max, x_max, 0, mapSizeX);
+    tc.y = map(agent.pos.y, -y_max, y_max, 0, mapSizeY);
+    
+    TrailMap[tc] += agent.color * 0.5;
+}
+
+
+[numthreads(8, 8, 1)]
+void Blur (uint3 id : SV_DispatchThreadID)
+{
+    float4 sum = float4(0.0, 0.0, 0.0, 0.0);
+    for (int i = -1; i < 2; i++)
+    {
+        for (int j = -1; j < 2; j++)
+        {
+            uint2 idx = id.xy;
+            idx.x += i;
+            idx.y += j;
+            sum = sum + TrailMap[idx];
+        }
+    }
+    
+    sum = sum / 9.0;
+    TrailMap[id.xy] = sum;
+    TrailMap[id.xy] -= decayRate;
+}
